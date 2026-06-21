@@ -114,25 +114,32 @@ struct
 
   val eps = 1e~9
 
-  fun rayAabb ({ origin, dir } : ray, { min, max } : aabb) =
+  (* Core slab test on raw scalar components, kept as its own top-level
+     function (not inlined into rayAabb). Operating on plain reals rather than
+     repeatedly-inlined V3 accessors keeps Poly/ML's native codegen within its
+     register budget ("asGenReg raised while compiling") on older x86-64. *)
+  fun slabHit (ox,oy,oz, dx,dy,dz, lox,loy,loz, hix,hiy,hiz) =
     let
-      (* slab method; handle dir component ~0 (parallel) without dividing. *)
-      fun slab (org, d, lo, hi, (tmin, tmax)) =
-        if Real.abs d < eps then
-          (if org < lo orelse org > hi then NONE else SOME (tmin, tmax))
-        else
-          let
-            val inv = 1.0 / d
-            val t1 = (lo - org) * inv
-            val t2 = (hi - org) * inv
-            val (tn, tf) = if t1 <= t2 then (t1, t2) else (t2, t1)
-            val tmin' = Real.max (tmin, tn)
-            val tmax' = Real.min (tmax, tf)
-          in if tmin' > tmax' then NONE else SOME (tmin', tmax') end
+      fun slab (org, d, lo, hi, acc) =
+        case acc of
+          NONE => NONE
+        | SOME (tmin, tmax) =>
+            if Real.abs d < eps then
+              (if org < lo orelse org > hi then NONE else SOME (tmin, tmax))
+            else
+              let
+                val inv = 1.0 / d
+                val t1 = (lo - org) * inv
+                val t2 = (hi - org) * inv
+                val tn = if t1 <= t2 then t1 else t2
+                val tf = if t1 <= t2 then t2 else t1
+                val tmin' = Real.max (tmin, tn)
+                val tmax' = Real.min (tmax, tf)
+              in if tmin' > tmax' then NONE else SOME (tmin', tmax') end
       val r0 = SOME (~1e308, 1e308)
-      val r1 = case r0 of SOME acc => slab (V3.x origin, V3.x dir, V3.x min, V3.x max, acc) | NONE => NONE
-      val r2 = case r1 of SOME acc => slab (V3.y origin, V3.y dir, V3.y min, V3.y max, acc) | NONE => NONE
-      val r3 = case r2 of SOME acc => slab (V3.z origin, V3.z dir, V3.z min, V3.z max, acc) | NONE => NONE
+      val r1 = slab (ox, dx, lox, hix, r0)
+      val r2 = slab (oy, dy, loy, hiy, r1)
+      val r3 = slab (oz, dz, loz, hiz, r2)
     in
       case r3 of
         NONE => NONE
@@ -141,6 +148,12 @@ struct
           else if tmin >= 0.0 then SOME tmin   (* first hit ahead *)
           else SOME 0.0                        (* origin inside box *)
     end
+
+  fun rayAabb ({ origin, dir } : ray, { min, max } : aabb) =
+    slabHit (V3.x origin, V3.y origin, V3.z origin,
+             V3.x dir, V3.y dir, V3.z dir,
+             V3.x min, V3.y min, V3.z min,
+             V3.x max, V3.y max, V3.z max)
 
   fun raySphere ({ origin, dir } : ray, { center, radius } : sphere) =
     let
