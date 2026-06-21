@@ -63,25 +63,30 @@ struct
     end
 
   (* Extract planes from a row-major view-projection. sml-glm stores matrices
-     column-major; toList gives column-major order. We index by (row,col). *)
+     column-major; toList gives column-major order. We index by (row,col).
+
+     The matrix entries are read on demand through `e` rather than destructured
+     into sixteen simultaneously-live `val` bindings; holding all sixteen reals
+     live at once overflows Poly/ML's native-codegen FP-register budget
+     ("asFPReg raised while compiling"). *)
   fun frustumOf m =
     let
       val xs = Vector.fromList (M4.toList m)
       (* column-major: element (row r, col c) is at index c*4 + r *)
       fun e (r, c) = Vector.sub (xs, c * 4 + r)
-      fun row r = (e (r,0), e (r,1), e (r,2), e (r,3))
-      val (m00,m01,m02,m03) = row 0
-      val (m10,m11,m12,m13) = row 1
-      val (m20,m21,m22,m23) = row 2
-      val (m30,m31,m32,m33) = row 3
       fun pl (a, b, c, d) = normalizePlane { normal = V3.v (a, b, c), d = d }
+      (* row r +/- row k, component by component *)
+      fun comb (sgn, k, r) (c) = e (k, c) + sgn * e (r, c)
+      fun plane (sgn, k, r) =
+        pl (comb (sgn, k, r) 0, comb (sgn, k, r) 1,
+            comb (sgn, k, r) 2, comb (sgn, k, r) 3)
     in
-      [ pl (m30+m00, m31+m01, m32+m02, m33+m03),   (* left   *)
-        pl (m30-m00, m31-m01, m32-m02, m33-m03),   (* right  *)
-        pl (m30+m10, m31+m11, m32+m12, m33+m13),   (* bottom *)
-        pl (m30-m10, m31-m11, m32-m12, m33-m13),   (* top    *)
-        pl (m30+m20, m31+m21, m32+m22, m33+m23),   (* near   *)
-        pl (m30-m20, m31-m21, m32-m22, m33-m23) ]  (* far    *)
+      [ plane ( 1.0, 3, 0),   (* left   : row3 + row0 *)
+        plane (~1.0, 3, 0),   (* right  : row3 - row0 *)
+        plane ( 1.0, 3, 1),   (* bottom : row3 + row1 *)
+        plane (~1.0, 3, 1),   (* top    : row3 - row1 *)
+        plane ( 1.0, 3, 2),   (* near   : row3 + row2 *)
+        plane (~1.0, 3, 2) ]  (* far    : row3 - row2 *)
     end
 
   fun signedDist ({ normal, d }, p) = V3.dot (normal, p) + d
@@ -159,34 +164,58 @@ struct
         end
     end
 
-  (* Moller-Trumbore; culls degenerate (zero-area) triangles, hits either face. *)
-  fun rayTriangle ({ origin, dir } : ray, (v0, v1, v2)) =
+  (* Core Moller-Trumbore. All intermediates live in a mutable array rather
+     than as simultaneously-live `val` bindings, so Poly/ML's native codegen
+     never has to hold a dozen reals in FP registers at once ("asFPReg raised
+     while compiling"). *)
+  fun mtIntersect (ox,oy,oz, dx,dy,dz,
+                   ax,ay,az, bx,by,bz, cx,cy,cz) =
     let
-      val e1 = V3.sub (v1, v0)
-      val e2 = V3.sub (v2, v0)
-      val p = V3.cross (dir, e2)
-      val det = V3.dot (e1, p)
+      val w = Array.array (12, 0.0)
+      fun st (i, v) = Array.update (w, i, v)
+      fun ld i = Array.sub (w, i)
+      (* 0..2 = e1, 3..5 = e2 *)
+      val () = st (0, bx-ax)  val () = st (1, by-ay)  val () = st (2, bz-az)
+      val () = st (3, cx-ax)  val () = st (4, cy-ay)  val () = st (5, cz-az)
+      (* 6..8 = p = dir x e2 *)
+      val () = st (6, dy*ld 5 - dz*ld 4)
+      val () = st (7, dz*ld 3 - dx*ld 5)
+      val () = st (8, dx*ld 4 - dy*ld 3)
+      val det = ld 0 * ld 6 + ld 1 * ld 7 + ld 2 * ld 8
     in
-      if Real.abs det < eps then NONE   (* parallel or degenerate *)
+      if Real.abs det < eps then NONE
       else
         let
           val invDet = 1.0 / det
-          val tvec = V3.sub (origin, v0)
-          val u = V3.dot (tvec, p) * invDet
+          (* 9..11 = tvec = origin - a *)
+          val () = st (9, ox-ax)  val () = st (10, oy-ay)  val () = st (11, oz-az)
+          val u = (ld 9 * ld 6 + ld 10 * ld 7 + ld 11 * ld 8) * invDet
         in
           if u < 0.0 orelse u > 1.0 then NONE
           else
             let
-              val q = V3.cross (tvec, e1)
-              val vv = V3.dot (dir, q) * invDet
+              (* reuse 6..8 for q = tvec x e1 *)
+              val q0 = ld 10 * ld 2 - ld 11 * ld 1
+              val q1 = ld 11 * ld 0 - ld 9 * ld 2
+              val q2 = ld 9 * ld 1 - ld 10 * ld 0
+              val () = st (6, q0)  val () = st (7, q1)  val () = st (8, q2)
+              val vv = (dx*ld 6 + dy*ld 7 + dz*ld 8) * invDet
             in
               if vv < 0.0 orelse u + vv > 1.0 then NONE
               else
-                let val t = V3.dot (e2, q) * invDet
-                in if t >= 0.0 then SOME t else NONE end
+                let val tt = (ld 3 * ld 6 + ld 4 * ld 7 + ld 5 * ld 8) * invDet
+                in if tt >= 0.0 then SOME tt else NONE end
             end
         end
     end
+
+  (* Moller-Trumbore; culls degenerate (zero-area) triangles, hits either face. *)
+  fun rayTriangle ({ origin, dir } : ray, (v0, v1, v2)) =
+    mtIntersect (V3.x origin, V3.y origin, V3.z origin,
+                 V3.x dir, V3.y dir, V3.z dir,
+                 V3.x v0, V3.y v0, V3.z v0,
+                 V3.x v1, V3.y v1, V3.z v1,
+                 V3.x v2, V3.y v2, V3.z v2)
 
   fun aabbAabb (a : aabb, b : aabb) =
     V3.x (#min a) <= V3.x (#max b) andalso V3.x (#max a) >= V3.x (#min b)
