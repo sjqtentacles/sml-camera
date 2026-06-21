@@ -1,0 +1,6 @@
+$(SML_LIB)/basis/basis.mlb
+
+../src/scene.mlb
+../lib/github.com/sjqtentacles/sml-raster/sources.mlb
+
+scene_demo.sml
