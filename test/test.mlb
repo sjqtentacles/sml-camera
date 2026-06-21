@@ -1,0 +1,14 @@
+(* Test executable basis: the library (with vendored sml-glm) plus harness/runner. *)
+
+$(SML_LIB)/basis/basis.mlb
+
+../src/scene.mlb
+
+harness.sml
+support.sml
+test_transform.sml
+test_camera.sml
+test_frustum.sml
+test_intersect.sml
+entry.sml
+main.sml

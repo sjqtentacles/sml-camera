@@ -1,0 +1,5 @@
+package github.com/sjqtentacles/sml-camera
+
+require {
+  github.com/sjqtentacles/sml-glm
+}

@@ -1,0 +1,7 @@
+(* MLB for the sml-camera library: vendored sml-glm core plus the scene sources.
+ * Consumers reference this file. The dependency .mlb is brought in WITHOUT a
+ * `local` wrapper so consumers may `open Glm` alongside Scene. *)
+$(SML_LIB)/basis/basis.mlb
+../lib/github.com/sjqtentacles/sml-glm/glm.mlb
+scene.sig
+scene.sml
