@@ -1,5 +1,7 @@
 # sml-camera
 
+[![CI](https://github.com/sjqtentacles/sml-camera/actions/workflows/ci.yml/badge.svg)](https://github.com/sjqtentacles/sml-camera/actions/workflows/ci.yml)
+
 Pure-Standard-ML **scene math** built on
 [`sml-glm`](https://github.com/sjqtentacles/sml-glm): transforms, cameras,
 frustum culling, and ray/volume intersection primitives. No FFI, no C — just
